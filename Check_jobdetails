@@ -1,0 +1,22 @@
+USE msdb;
+GO
+
+DECLARE @JobName SYSNAME = 'Your_Job_Name';
+
+SELECT
+    j.name AS JobName,
+    j.enabled AS JobEnabled,
+    j.date_created AS CreatedDate,
+    j.date_modified AS ModifiedDate,
+    s.step_id AS StepID,
+    s.step_name AS StepName,
+    s.subsystem AS StepType,
+    s.database_name AS DatabaseName,
+    s.command AS JobScript,
+    s.retry_attempts AS RetryAttempts,
+    s.retry_interval AS RetryInterval
+FROM dbo.sysjobs j
+INNER JOIN dbo.sysjobsteps s
+    ON j.job_id = s.job_id
+WHERE j.name = @JobName
+ORDER BY s.step_id;
