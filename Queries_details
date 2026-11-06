@@ -1,0 +1,119 @@
+SET NOCOUNT ON;
+DECLARE @From datetime = '2026-11-06 02:30';
+DECLARE @To   datetime = '2026-11-06 04:30';
+DECLARE @UtcOffsetMin int = DATEDIFF(MINUTE, GETUTCDATE(), GETDATE());
+
+------------------------------------------------------------
+-- 1. CommandLog: what IndexOptimize did and when
+------------------------------------------------------------
+IF OBJECT_ID('DBADB.dbo.CommandLog') IS NOT NULL
+    EXEC sp_executesql
+        N'SELECT DatabaseName, ObjectName, IndexName, CommandType, StartTime, EndTime,
+                 ErrorNumber, ErrorMessage
+          FROM DBADB.dbo.CommandLog
+          WHERE StartTime >= @From AND StartTime < @To
+          ORDER BY StartTime;',
+        N'@From datetime, @To datetime', @From, @To;
+ELSE
+    SELECT 'DBADB.dbo.CommandLog not found' AS [1_CommandLog];
+
+------------------------------------------------------------
+-- 2a. SQL Agent jobs overlapping the window
+------------------------------------------------------------
+SELECT j.name AS job_name,
+       msdb.dbo.agent_datetime(h.run_date, h.run_time) AS start_time,
+       h.run_duration AS duration_hhmmss,
+       CASE h.run_status WHEN 0 THEN 'Failed' WHEN 1 THEN 'Succeeded'
+            WHEN 2 THEN 'Retry' WHEN 3 THEN 'Canceled' END AS status
+FROM msdb.dbo.sysjobhistory h
+JOIN msdb.dbo.sysjobs j ON j.job_id = h.job_id
+WHERE h.step_id = 0
+  AND msdb.dbo.agent_datetime(h.run_date, h.run_time) BETWEEN @From AND @To
+ORDER BY start_time;
+
+------------------------------------------------------------
+-- 2b. Backups overlapping the window
+------------------------------------------------------------
+SELECT database_name,
+       CASE type WHEN 'D' THEN 'Full' WHEN 'I' THEN 'Diff' WHEN 'L' THEN 'Log' ELSE type END AS backup_type,
+       backup_start_date, backup_finish_date,
+       CAST(backup_size/1048576.0 AS decimal(18,1)) AS size_mb
+FROM msdb.dbo.backupset
+WHERE backup_start_date BETWEEN @From AND @To
+ORDER BY backup_start_date;
+
+------------------------------------------------------------
+-- 3. system_health XE: Error 701/802 with session, app, login, SQL text
+--    (event times converted from UTC to server local time)
+------------------------------------------------------------
+;WITH x AS (
+    SELECT CAST(event_data AS xml) AS ed
+    FROM sys.fn_xe_file_target_read_file('system_health*.xel', NULL, NULL, NULL)
+    WHERE object_name = 'error_reported'
+)
+SELECT DATEADD(MINUTE, @UtcOffsetMin, n.value('(@timestamp)[1]','datetime2')) AS local_time,
+       n.value('(data[@name="error_number"]/value)[1]','int')            AS error_number,
+       n.value('(action[@name="session_id"]/value)[1]','int')            AS spid,
+       n.value('(action[@name="client_app_name"]/value)[1]','nvarchar(200)') AS app_name,
+       n.value('(action[@name="username"]/value)[1]','nvarchar(200)')    AS username,
+       n.value('(action[@name="client_hostname"]/value)[1]','nvarchar(200)') AS host_name,
+       n.value('(action[@name="sql_text"]/value)[1]','nvarchar(max)')    AS sql_text
+FROM x
+CROSS APPLY ed.nodes('/event') t(n)
+WHERE n.value('(data[@name="error_number"]/value)[1]','int') IN (701, 802)
+  AND DATEADD(MINUTE, @UtcOffsetMin, n.value('(@timestamp)[1]','datetime2')) BETWEEN @From AND @To
+ORDER BY local_time;
+
+------------------------------------------------------------
+-- 4. Plan cache: statements with executions in the window (partial evidence)
+------------------------------------------------------------
+SELECT TOP 50
+       qs.last_execution_time, qs.execution_count,
+       qs.max_grant_kb/1024 AS max_grant_mb,
+       DB_NAME(st.dbid) AS db_name,
+       LEFT(st.text, 500) AS sql_text
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+WHERE qs.last_execution_time BETWEEN @From AND @To
+ORDER BY qs.max_grant_kb DESC;
+
+------------------------------------------------------------
+-- 5. Sessions still connected whose last request was in the window
+------------------------------------------------------------
+SELECT session_id, login_name, host_name, program_name,
+       last_request_start_time, last_request_end_time
+FROM sys.dm_exec_sessions
+WHERE is_user_process = 1
+  AND last_request_start_time <= @To
+  AND last_request_end_time   >= @From
+ORDER BY last_request_start_time;
+
+------------------------------------------------------------
+-- 6. Live snapshot: who is running and holding memory right now
+------------------------------------------------------------
+SELECT r.session_id, s.login_name, s.program_name, s.host_name,
+       r.start_time, r.status, r.wait_type,
+       mg.requested_memory_kb/1024 AS requested_mb,
+       mg.granted_memory_kb/1024   AS granted_mb,
+       mg.used_memory_kb/1024      AS used_mb,
+       t.text
+FROM sys.dm_exec_requests r
+JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id
+LEFT JOIN sys.dm_exec_query_memory_grants mg ON mg.session_id = r.session_id
+OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t
+WHERE s.is_user_process = 1 AND r.session_id <> @@SPID;
+
+------------------------------------------------------------
+-- 7. Memory snapshot: PLE, SQL memory, OS memory, max server memory
+------------------------------------------------------------
+SELECT (SELECT cntr_value FROM sys.dm_os_performance_counters
+        WHERE counter_name = 'Page life expectancy' AND object_name LIKE '%Buffer Manager%') AS ple_seconds,
+       (SELECT cntr_value FROM sys.dm_os_performance_counters
+        WHERE counter_name = 'Memory Grants Pending') AS memory_grants_pending,
+       (SELECT CAST(value_in_use AS int) FROM sys.configurations
+        WHERE name = 'max server memory (MB)') AS max_server_memory_mb,
+       sm.total_physical_memory_kb/1024     AS os_total_mb,
+       sm.available_physical_memory_kb/1024 AS os_available_mb,
+       pm.physical_memory_in_use_kb/1024    AS sql_memory_in_use_mb
+FROM sys.dm_os_sys_memory sm
+CROSS JOIN sys.dm_os_process_memory pm;
