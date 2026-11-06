@@ -1,0 +1,36 @@
+SET NOCOUNT ON;
+
+-- 1. Plan cache: how far back does it go?
+SELECT MIN(creation_time)        AS oldest_plan_created,
+       MIN(last_execution_time)  AS oldest_last_exec,
+       MAX(last_execution_time)  AS newest_last_exec,
+       COUNT(*)                  AS cached_statements,
+       SUM(CASE WHEN last_execution_time BETWEEN '2026-11-06 03:00' AND '2026-11-06 04:00'
+                THEN 1 ELSE 0 END) AS statements_last_run_in_window
+FROM sys.dm_exec_query_stats;
+
+-- 2. Plan cache size and SQL Server start time
+SELECT (SELECT sqlserver_start_time FROM sys.dm_os_sys_info) AS sql_started,
+       (SELECT SUM(size_in_bytes)/1048576 FROM sys.dm_exec_cached_plans) AS plan_cache_mb,
+       (SELECT COUNT(*) FROM sys.dm_exec_cached_plans) AS cached_plans;
+
+-- 3. Job history retention (msdb)
+SELECT MIN(msdb.dbo.agent_datetime(run_date, run_time)) AS oldest_job_history,
+       MAX(msdb.dbo.agent_datetime(run_date, run_time)) AS newest_job_history
+FROM msdb.dbo.sysjobhistory;
+
+-- 4. Backup history retention
+SELECT MIN(backup_start_date) AS oldest_backup_history FROM msdb.dbo.backupset;
+
+-- 5. CommandLog retention (Ola Hallengren)
+IF OBJECT_ID('DBADB.dbo.CommandLog') IS NOT NULL
+    EXEC('SELECT MIN(StartTime) AS oldest_commandlog, MAX(StartTime) AS newest_commandlog
+          FROM DBADB.dbo.CommandLog');
+
+-- 6. system_health event files: how far back they go
+SELECT MIN(CAST(event_data AS xml).value('(/event/@timestamp)[1]','datetime2')) AS oldest_event_utc,
+       MAX(CAST(event_data AS xml).value('(/event/@timestamp)[1]','datetime2')) AS newest_event_utc
+FROM sys.fn_xe_file_target_read_file('system_health*.xel', NULL, NULL, NULL);
+
+-- 7. SQL error log files available
+EXEC sys.sp_enumerrorlogs;
