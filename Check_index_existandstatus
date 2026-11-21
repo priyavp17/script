@@ -1,11 +1,13 @@
 1. Check whether the index exists
-SELECT
-    i.name AS IndexName,
-    OBJECT_NAME(i.object_id) AS TableName,
-    i.type_desc AS IndexType
-FROM sys.indexes i
-WHERE i.object_id = OBJECT_ID('dbo.TableName')
-  AND i.name = 'IndexName';
+IF EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE object_id = OBJECT_ID('dbo.YourTable')
+      AND name = 'IX_YourIndexName'
+)
+    SELECT 'Index exists' AS Result;
+ELSE
+    SELECT 'Index does not exist' AS Result;
 2. Check whether the index is disabled
 SELECT
     i.name AS IndexName,
@@ -18,3 +20,11 @@ SELECT
 FROM sys.indexes i
 WHERE i.object_id = OBJECT_ID('dbo.TableName')
   AND i.name = 'IndexName';
+SELECT 
+    OBJECT_NAME(object_id) AS TableName,
+    name                   AS IndexName,
+    is_disabled,
+    CASE WHEN is_disabled = 1 THEN 'Disabled' ELSE 'Enabled' END AS Status
+FROM sys.indexes
+WHERE object_id = OBJECT_ID('dbo.YourTable')
+  AND name = 'IX_YourIndexName';
