@@ -1,0 +1,20 @@
+1. Check whether the index exists
+SELECT
+    i.name AS IndexName,
+    OBJECT_NAME(i.object_id) AS TableName,
+    i.type_desc AS IndexType
+FROM sys.indexes i
+WHERE i.object_id = OBJECT_ID('dbo.TableName')
+  AND i.name = 'IndexName';
+2. Check whether the index is disabled
+SELECT
+    i.name AS IndexName,
+    OBJECT_NAME(i.object_id) AS TableName,
+    i.is_disabled AS IsDisabled,
+    CASE
+        WHEN i.is_disabled = 1 THEN 'Disabled'
+        WHEN i.is_disabled = 0 THEN 'Enabled'
+    END AS IndexStatus
+FROM sys.indexes i
+WHERE i.object_id = OBJECT_ID('dbo.TableName')
+  AND i.name = 'IndexName';
