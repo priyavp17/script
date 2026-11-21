@@ -28,3 +28,21 @@ SELECT
 FROM sys.indexes
 WHERE object_id = OBJECT_ID('dbo.YourTable')
   AND name = 'IX_YourIndexName';
+
+
+SELECT 
+    DB_NAME()                       AS DatabaseName,
+    OBJECT_NAME(i.object_id)        AS TableName,
+    i.name                          AS IndexName
+FROM sys.indexes i
+WHERE i.object_id = OBJECT_ID('dbo.YourTable')
+  AND i.name = 'IX_YourIndexName';
+
+SELECT 
+    DB_NAME()                       AS DatabaseName,
+    OBJECT_NAME(i.object_id)        AS TableName,
+    i.name                          AS IndexName
+FROM sys.indexes i
+WHERE i.object_id = OBJECT_ID('dbo.YourTable')
+  AND i.name = 'IX_YourIndexName'
+  AND i.is_disabled = 1;
